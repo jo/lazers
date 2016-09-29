@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>yakshav.es</title>
+    <link rel="stylesheet" href="/css/site.css">
+    <link rel="stylesheet" href="/css/hack.css">
+    <link rel="stylesheet" href="/css/highlight.css">
+  </head>
+  <body class="hack">
+    <div class="container">
+
+<h1 id="lazers-replicator">lazers-replicator</h1>
+<p>A replicator that takes a lazers DB and syncs couchdb data into it. It is an implementation of the algorithm described here: <a href="http://docs.couchdb.org/en/1.6.1/replication/protocol.%20html#replication-protocol-algorithm">here</a>.</p>
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">extern</span> <span class="kw">crate</span> hyper;
+<span class="kw">use</span> std::marker::PhantomData;</code></pre></div>
+<h2 id="verify-peers">Verify peers</h2>
+<p>We implement the peer verification as described <a href="http://docs.couchdb.org/en/1.6.1/replication/protocol.%20html#verify-peers">here</a>.</p>
+<p>We follow a state-machine like pattern here and name all possible states first. We label all states by using zero sized structs. They only serve as information for the type system.</p>
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">struct</span> Unconnected;
+<span class="kw">struct</span> CheckedSourceExistence;
+<span class="kw">struct</span> CheckTargetExistence;
+<span class="kw">struct</span> CheckCreateTarget;
+<span class="kw">struct</span> CreateTarget;
+<span class="kw">struct</span> GetSourceInformation;
+<span class="kw">type</span> VerifyError = <span class="dt">String</span>;
+<span class="kw">struct</span> Abort(VerifyError);</code></pre></div>
+<p>We then define a <code>VerifyPeers</code> struct to define the flow used in the first few steps. <code>VerifyPeers</code> also wraps an instance of a <code>CouchDB</code> client.</p>
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">trait</span> Client: <span class="bu">Default</span> {
+    <span class="kw">fn</span> verify_existence&lt;Url: hyper::client::IntoUrl&gt;(&amp;<span class="kw">self</span>, url: Url) -&gt; <span class="dt">Result</span>&lt;<span class="dt">bool</span>, <span class="dt">String</span>&gt;;
+}
+
+<span class="kw">struct</span> HyperClient {
+    inner: hyper::client::Client,
+}
+
+<span class="kw">impl</span> <span class="bu">Default</span> <span class="kw">for</span> HyperClient {
+    <span class="kw">fn</span> default() -&gt; HyperClient {
+        HyperClient { inner: hyper::client::Client::new() }
+    }
+}
+
+<span class="kw">impl</span> Client <span class="kw">for</span> HyperClient {
+    <span class="kw">fn</span> verify_existence&lt;Url: hyper::client::IntoUrl&gt;(&amp;<span class="kw">self</span>, url: Url) -&gt; <span class="dt">Result</span>&lt;<span class="dt">bool</span>, <span class="dt">String</span>&gt; {
+        <span class="kw">self</span>.inner
+            .head(url)
+            .send()
+            .map(|_| <span class="cn">true</span>)
+            .map_err(|e| e.to_string())
+    }
+}
+
+<span class="kw">trait</span> Storage {
+    <span class="kw">fn</span> check_database(&amp;<span class="kw">self</span>, name: &amp;<span class="dt">str</span>) -&gt; <span class="dt">Result</span>&lt;<span class="dt">bool</span>, <span class="dt">String</span>&gt;;
+}
+
+<span class="kw">impl</span>&lt;C: Client&gt; Storage <span class="kw">for</span> RemoteCouchDB&lt;C&gt; {
+    <span class="kw">fn</span> check_database(&amp;<span class="kw">self</span>, name: &amp;<span class="dt">str</span>) -&gt; <span class="dt">Result</span>&lt;<span class="dt">bool</span>, <span class="dt">String</span>&gt; {
+        <span class="kw">self</span>.client.verify_existence(&amp;<span class="pp">format!</span>(<span class="st">&quot;{}/{}&quot;</span>, <span class="kw">self</span>.base_url, name))
+    }
+}
+
+<span class="kw">struct</span> RemoteCouchDB&lt;C: Client = HyperClient&gt; {
+    client: C,
+    base_url: <span class="dt">String</span>,
+}
+
+<span class="kw">impl</span>&lt;C: Client&gt; RemoteCouchDB&lt;C&gt; {
+    <span class="kw">fn</span> new(base_url: <span class="dt">String</span>) -&gt; RemoteCouchDB&lt;C&gt; {
+        RemoteCouchDB {
+            client: C::default(),
+            base_url: base_url,
+        }
+    }
+}
+
+<span class="kw">struct</span> VerifyPeers&lt;State&gt; {
+    source: <span class="dt">Box</span>&lt;Storage&gt;,
+    marker: PhantomData&lt;State&gt;,
+}
+
+<span class="kw">impl</span> VerifyPeers&lt;Unconnected&gt; {
+    <span class="kw">fn</span> check_source_existence
+        (<span class="kw">self</span>,
+         db_name: &amp;<span class="dt">str</span>)
+         -&gt; <span class="dt">Result</span>&lt;VerifyPeers&lt;CheckedSourceExistence&gt;, VerifyPeers&lt;Abort&gt;&gt; {
+        <span class="kw">let</span> source = <span class="kw">match</span> <span class="kw">self</span> {
+            VerifyPeers { source: s, marker: _ } =&gt; s,
+        };
+        <span class="kw">let</span> res = source.check_database(db_name);
+
+        <span class="kw">match</span> res {
+            <span class="cn">Ok</span>(present) <span class="kw">if</span> present == <span class="cn">true</span> =&gt; {
+                <span class="cn">Ok</span>(VerifyPeers {
+                    source: source,
+                    marker: PhantomData::&lt;CheckedSourceExistence&gt;,
+                })
+            }
+            _ =&gt; {
+                <span class="cn">Err</span>(VerifyPeers {
+                    source: source,
+                    marker: PhantomData::&lt;Abort&gt;,
+                })
+            }
+
+        }
+    }
+}</code></pre></div>
+
+      <a href="/">top<a/>
+    </div>
+  </body>
+  <script src="./prism.js"></script>
+</html>

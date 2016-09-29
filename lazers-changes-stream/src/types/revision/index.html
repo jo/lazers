@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>yakshav.es</title>
+    <link rel="stylesheet" href="/css/site.css">
+    <link rel="stylesheet" href="/css/hack.css">
+    <link rel="stylesheet" href="/css/highlight.css">
+  </head>
+  <body class="hack">
+    <div class="container">
+
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">use</span> serde;
+<span class="kw">use</span> serde::de::Deserialize;
+
+<span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="at">)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> Revision {
+    rev: <span class="dt">String</span>,
+}
+
+<span class="kw">impl</span> Deserialize <span class="kw">for</span> Revision {
+    <span class="kw">fn</span> deserialize&lt;D&gt;(deserializer: &amp;<span class="kw">mut</span> D) -&gt; <span class="dt">Result</span>&lt;Revision, D::Error&gt;
+        <span class="kw">where</span> D: serde::de::Deserializer
+    {
+        deserializer.deserialize(RevisionVisitor)
+    }
+}
+
+<span class="kw">enum</span> RevisionField {
+    Rev,
+}
+
+<span class="kw">impl</span> serde::Deserialize <span class="kw">for</span> RevisionField {
+    <span class="kw">fn</span> deserialize&lt;D&gt;(deserializer: &amp;<span class="kw">mut</span> D) -&gt; <span class="dt">Result</span>&lt;RevisionField, D::Error&gt;
+        <span class="kw">where</span> D: serde::de::Deserializer
+    {
+        <span class="kw">struct</span> RevisionFieldVisitor;
+
+        <span class="kw">impl</span> serde::de::Visitor <span class="kw">for</span> RevisionFieldVisitor {
+            <span class="kw">type</span> Value = RevisionField;
+
+            <span class="kw">fn</span> visit_str&lt;E&gt;(&amp;<span class="kw">mut</span> <span class="kw">self</span>, value: &amp;<span class="dt">str</span>) -&gt; <span class="dt">Result</span>&lt;RevisionField, E&gt;
+                <span class="kw">where</span> E: serde::de::Error
+            {
+                <span class="kw">match</span> value {
+                    <span class="st">&quot;rev&quot;</span> =&gt; <span class="cn">Ok</span>(RevisionField::Rev),
+                    _ =&gt; <span class="cn">Err</span>(serde::de::Error::missing_field(<span class="st">&quot;expected rev field&quot;</span>)),
+                }
+            }
+        }
+
+        deserializer.deserialize(RevisionFieldVisitor)
+    }
+}
+
+<span class="kw">struct</span> RevisionVisitor;
+
+<span class="kw">impl</span> serde::de::Visitor <span class="kw">for</span> RevisionVisitor {
+    <span class="kw">type</span> Value = Revision;
+
+    <span class="kw">fn</span> visit_map&lt;V&gt;(&amp;<span class="kw">mut</span> <span class="kw">self</span>, <span class="kw">mut</span> visitor: V) -&gt; <span class="dt">Result</span>&lt;Revision, V::Error&gt;
+        <span class="kw">where</span> V: serde::de::MapVisitor
+    {
+        <span class="kw">let</span> <span class="kw">mut</span> rev = <span class="cn">None</span>;
+
+        <span class="kw">loop</span> {
+            <span class="kw">match</span> <span class="pp">try!</span>(visitor.visit_key()) {
+                <span class="cn">Some</span>(RevisionField::Rev) =&gt; {
+                    rev = <span class="cn">Some</span>(<span class="pp">try!</span>(visitor.visit_value()));
+                }
+                <span class="cn">None</span> =&gt; {
+                    <span class="kw">break</span>;
+                }
+            }
+        }
+
+        <span class="kw">let</span> rev = <span class="kw">match</span> rev {
+            <span class="cn">Some</span>(rev) =&gt; rev,
+            <span class="cn">None</span> =&gt; <span class="pp">try!</span>(visitor.missing_field(<span class="st">&quot;rev&quot;</span>)),
+        };
+
+        <span class="pp">try!</span>(visitor.end());
+
+        <span class="cn">Ok</span>(Revision { rev: rev })
+    }
+}</code></pre></div>
+
+      <a href="/">top<a/>
+    </div>
+  </body>
+  <script src="./prism.js"></script>
+</html>

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>yakshav.es</title>
+    <link rel="stylesheet" href="/css/site.css">
+    <link rel="stylesheet" href="/css/hack.css">
+    <link rel="stylesheet" href="/css/highlight.css">
+  </head>
+  <body class="hack">
+    <div class="container">
+
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">use</span> serde;
+<span class="kw">use</span> serde::de::Deserialize;
+
+<span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="at">)]</span>
+<span class="kw">pub</span> <span class="kw">struct</span> LastSeq {
+    last_seq: <span class="dt">i64</span>,
+}
+
+<span class="kw">impl</span> Deserialize <span class="kw">for</span> LastSeq {
+    <span class="kw">fn</span> deserialize&lt;D&gt;(deserializer: &amp;<span class="kw">mut</span> D) -&gt; <span class="dt">Result</span>&lt;LastSeq, D::Error&gt;
+        <span class="kw">where</span> D: serde::Deserializer
+    {
+        deserializer.deserialize(LastSeqVisitor)
+    }
+}
+
+<span class="kw">enum</span> LastSeqField {
+    LastSeq,
+}
+
+<span class="kw">impl</span> serde::Deserialize <span class="kw">for</span> LastSeqField {
+    <span class="kw">fn</span> deserialize&lt;D&gt;(deserializer: &amp;<span class="kw">mut</span> D) -&gt; <span class="dt">Result</span>&lt;LastSeqField, D::Error&gt;
+        <span class="kw">where</span> D: serde::de::Deserializer
+    {
+        <span class="kw">struct</span> LastSeqFieldVisitor;
+
+        <span class="kw">impl</span> serde::de::Visitor <span class="kw">for</span> LastSeqFieldVisitor {
+            <span class="kw">type</span> Value = LastSeqField;
+
+            <span class="kw">fn</span> visit_str&lt;E&gt;(&amp;<span class="kw">mut</span> <span class="kw">self</span>, value: &amp;<span class="dt">str</span>) -&gt; <span class="dt">Result</span>&lt;LastSeqField, E&gt;
+                <span class="kw">where</span> E: serde::de::Error
+            {
+                <span class="kw">match</span> value {
+                    <span class="st">&quot;last_seq&quot;</span> =&gt; <span class="cn">Ok</span>(LastSeqField::LastSeq),
+                    _ =&gt; {
+                        <span class="cn">Err</span>(serde::de::Error::unknown_field(<span class="pp">format!</span>(<span class="st">&quot;expected last_seq field, </span><span class="sc">\</span>
+<span class="st">                                                                     got: {}&quot;</span>,
+                                                                    value)
+                            .as_ref()))
+                    }
+                }
+            }
+        }
+
+        deserializer.deserialize(LastSeqFieldVisitor)
+    }
+}
+
+<span class="kw">pub</span> <span class="kw">struct</span> LastSeqVisitor;
+
+<span class="kw">impl</span> serde::de::Visitor <span class="kw">for</span> LastSeqVisitor {
+    <span class="kw">type</span> Value = LastSeq;
+
+    <span class="kw">fn</span> visit_map&lt;V&gt;(&amp;<span class="kw">mut</span> <span class="kw">self</span>, <span class="kw">mut</span> visitor: V) -&gt; <span class="dt">Result</span>&lt;LastSeq, V::Error&gt;
+        <span class="kw">where</span> V: serde::de::MapVisitor
+    {
+        <span class="kw">let</span> <span class="kw">mut</span> last_seq = <span class="cn">None</span>;
+
+        <span class="kw">loop</span> {
+            <span class="kw">match</span> <span class="pp">try!</span>(visitor.visit_key()) {
+                <span class="cn">Some</span>(LastSeqField::LastSeq) =&gt; {
+                    last_seq = <span class="cn">Some</span>(<span class="pp">try!</span>(visitor.visit_value()));
+                }
+                <span class="cn">None</span> =&gt; {
+                    <span class="kw">break</span>;
+                }
+            }
+        }
+
+        <span class="kw">let</span> last_seq = <span class="kw">match</span> last_seq {
+            <span class="cn">Some</span>(last_seq) =&gt; last_seq,
+            <span class="cn">None</span> =&gt; <span class="pp">try!</span>(visitor.missing_field(<span class="st">&quot;last_seq&quot;</span>)),
+        };
+
+        <span class="pp">try!</span>(visitor.end());
+
+        <span class="cn">Ok</span>(LastSeq { last_seq: last_seq })
+    }
+}
+
+<span class="at">#[</span>cfg<span class="at">(</span>test<span class="at">)]</span>
+<span class="kw">mod</span> tests {
+    <span class="kw">use</span> serde_json <span class="kw">as</span> json;
+    <span class="kw">use</span> <span class="kw">super</span>::LastSeq;
+
+    <span class="at">#[</span>test<span class="at">]</span>
+    <span class="kw">fn</span> parses_last_seq_line() {
+        json::from_str::&lt;LastSeq&gt;(<span class="st">&quot;{</span><span class="sc">\&quot;</span><span class="st">last_seq</span><span class="sc">\&quot;</span><span class="st">:3}&quot;</span>).unwrap();
+    }
+}</code></pre></div>
+
+      <a href="/">top<a/>
+    </div>
+  </body>
+  <script src="./prism.js"></script>
+</html>

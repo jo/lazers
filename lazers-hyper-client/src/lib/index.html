@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>yakshav.es</title>
+    <link rel="stylesheet" href="/css/site.css">
+    <link rel="stylesheet" href="/css/hack.css">
+    <link rel="stylesheet" href="/css/highlight.css">
+  </head>
+  <body class="hack">
+    <div class="container">
+
+<h1 id="lazers-hyper-client">lazers-hyper-client</h1>
+<p>A CouchDB client implemented using hyper.</p>
+<p>This is currently a draft implementation that suffers from a few problems, mainly that generating the errors hooking into lazers-traits a bit noisy.</p>
+<p>This crate itself holds no logic outside of HTTP handling, the description of all workflows is in lazers-traits.</p>
+<div class="sourceCode"><pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">extern</span> <span class="kw">crate</span> hyper;
+<span class="kw">extern</span> <span class="kw">crate</span> url;
+<span class="kw">extern</span> <span class="kw">crate</span> lazers_traits;
+<span class="kw">extern</span> <span class="kw">crate</span> serde;
+<span class="kw">extern</span> <span class="kw">crate</span> serde_json;
+<span class="kw">extern</span> <span class="kw">crate</span> mime;
+<span class="kw">extern</span> <span class="kw">crate</span> backtrace;
+
+<span class="kw">mod</span> types;
+<span class="kw">use</span> types::document_created::DocumentCreated;
+<span class="kw">use</span> types::error;
+
+<span class="kw">use</span> lazers_traits::prelude::*;
+
+<span class="kw">use</span> serde_json::de::from_reader;
+<span class="kw">use</span> serde_json::ser::to_string;
+
+<span class="kw">use</span> hyper::header::ETag;
+<span class="kw">use</span> hyper::header::ContentType;
+
+<span class="kw">use</span> hyper::client::IntoUrl;
+
+<span class="kw">use</span> hyper::status::StatusCode;
+<span class="kw">use</span> std::sync::Arc;
+
+<span class="kw">use</span> url::{Url, ParseError};
+
+<span class="kw">pub</span> <span class="kw">struct</span> HyperClient {
+    inner: hyper::client::Client,
+    base_url: Url,
+}
+
+<span class="kw">impl</span> HyperClient {
+    <span class="kw">pub</span> <span class="kw">fn</span> new&lt;T: IntoUrl&gt;(url: T) -&gt; std::result::<span class="dt">Result</span>&lt;HyperClient, ParseError&gt; {
+        <span class="cn">Ok</span>(HyperClient {
+            inner: hyper::client::Client::new(),
+            base_url: <span class="pp">try!</span>(url.into_url()),
+        })
+    }
+}
+
+<span class="kw">impl</span> <span class="bu">Default</span> <span class="kw">for</span> HyperClient {
+    <span class="kw">fn</span> default() -&gt; HyperClient {
+        HyperClient {
+            inner: hyper::client::Client::new(),
+            base_url: Url::parse(<span class="st">&quot;http://localhost:5984&quot;</span>).expect(<span class="st">&quot;this is a valid URL&quot;</span>),
+        }
+    }
+}
+
+<span class="kw">pub</span> <span class="kw">struct</span> RemoteDatabaseCreator {
+    name: DatabaseName,
+    base_url: Url,
+}
+
+<span class="kw">pub</span> <span class="kw">struct</span> RemoteDatabase {
+    name: DatabaseName,
+    base_url: Url,
+}
+
+<span class="kw">impl</span> DatabaseCreator <span class="kw">for</span> RemoteDatabaseCreator {
+    <span class="kw">type</span> D = RemoteDatabase;
+
+    <span class="kw">fn</span> create(<span class="kw">self</span>) -&gt; <span class="dt">Result</span>&lt;RemoteDatabase&gt; {
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(<span class="kw">self</span>.name.as_ref());
+        <span class="kw">let</span> client = hyper::client::Client::new();
+        <span class="kw">let</span> res = client.put(url)
+            .send();
+        <span class="pp">try!</span>(res.chain_err(|| <span class="kw">self</span>.name.clone()));
+
+        <span class="cn">Ok</span>(RemoteDatabase {
+            name: <span class="kw">self</span>.name,
+            base_url: <span class="kw">self</span>.base_url,
+        })
+    }
+}
+
+<span class="kw">impl</span> Database <span class="kw">for</span> RemoteDatabase {
+    <span class="kw">type</span> Creator = RemoteDatabaseCreator;
+
+    <span class="kw">fn</span> destroy(<span class="kw">self</span>) -&gt; <span class="dt">Result</span>&lt;RemoteDatabaseCreator&gt; {
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(<span class="kw">self</span>.name.as_ref());
+        <span class="kw">let</span> client = hyper::client::Client::new();
+        <span class="kw">let</span> res = client.delete(url)
+            .send();
+
+        <span class="pp">try!</span>(res.chain_err(|| <span class="kw">self</span>.name.clone()));
+
+        <span class="cn">Ok</span>(RemoteDatabaseCreator {
+            name: <span class="kw">self</span>.name,
+            base_url: <span class="kw">self</span>.base_url,
+        })
+    }
+
+    <span class="kw">fn</span> doc&lt;<span class="ot">&#39;a</span>, K: Key, D: Document&gt;(&amp;<span class="ot">&#39;a</span> <span class="kw">self</span>,
+                                    key: K)
+                                    -&gt; <span class="dt">Result</span>&lt;DatabaseEntry&lt;<span class="ot">&#39;a</span>, K, D, RemoteDatabase&gt;&gt; {
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(<span class="pp">format!</span>(<span class="st">&quot;{}/{}&quot;</span>, <span class="kw">self</span>.name, key.id()).as_ref());
+        <span class="kw">let</span> client = hyper::client::Client::new();
+        <span class="kw">let</span> res = client.get(url)
+            .send();
+
+        <span class="kw">match</span> res {
+            <span class="cn">Ok</span>(r) =&gt; {
+                <span class="kw">match</span> r.status {
+                    StatusCode::<span class="cn">Ok</span> =&gt; {
+                        <span class="kw">let</span> rev = r.headers.get::&lt;ETag&gt;().unwrap().clone();
+                        <span class="kw">let</span> key_with_rev = &lt;K <span class="kw">as</span> Key&gt;::from_id_and_rev(key.id().to_owned(),
+                                                                       <span class="cn">Some</span>(rev.tag().to_owned()));
+                        <span class="kw">let</span> doc = from_reader(r).unwrap();
+                        <span class="cn">Ok</span>(DatabaseEntry::present(key_with_rev, doc, <span class="kw">self</span>))
+                    }
+                    StatusCode::NotFound =&gt; <span class="cn">Ok</span>(DatabaseEntry::absent(key, <span class="kw">self</span>)),
+                    _ =&gt; {
+                        error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected status: {}&quot;</span>, r.status),
+                              backtrace::Backtrace::new())
+                    }
+                }
+            }
+            <span class="cn">Err</span>(e) =&gt; {
+                hyper_error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected HTTP error&quot;</span>),
+                            e,
+                            backtrace::Backtrace::new())
+            }
+        }
+    }
+
+    <span class="co">// this should probably be &amp;doc, as Doc won&#39;t be changed, but might</span>
+    <span class="co">// get a new key</span>
+    <span class="kw">fn</span> insert&lt;K: Key, D: Document&gt;(&amp;<span class="kw">self</span>, key: K, doc: D) -&gt; <span class="dt">Result</span>&lt;(K, D)&gt; {
+        <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span>, key);
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(<span class="pp">format!</span>(<span class="st">&quot;{}/{}&quot;</span>, <span class="kw">self</span>.name, key.id()).as_ref());
+
+        <span class="kw">if</span> <span class="kw">let</span> <span class="cn">Some</span>(rev) = key.rev() {
+            url.query_pairs_mut().append_pair(<span class="st">&quot;rev&quot;</span>, rev);
+        }
+
+        <span class="kw">let</span> client = hyper::client::Client::new();
+        <span class="kw">let</span> body = <span class="kw">match</span> to_string(&amp;doc) {
+            <span class="cn">Ok</span>(s) =&gt; s,
+            <span class="cn">Err</span>(e) =&gt; {
+                <span class="kw">return</span> hyper_error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected HTTP error&quot;</span>),
+                                   e,
+                                   backtrace::Backtrace::new())
+            }
+        };
+
+        <span class="kw">let</span> mime: mime::Mime = <span class="st">&quot;application/json&quot;</span>.parse().unwrap();
+        <span class="kw">let</span> res = client.put(url)
+            .header(ContentType(mime))
+            .body(&amp;body)
+            .send();
+        <span class="kw">match</span> res {
+            <span class="cn">Ok</span>(r) =&gt; {
+                <span class="kw">match</span> r.status {
+                    StatusCode::Created =&gt; {
+                        <span class="kw">let</span> response_data: DocumentCreated = from_reader(r).unwrap();
+
+                        <span class="kw">let</span> k = K::from_id_and_rev(response_data.id, <span class="cn">Some</span>(response_data.rev));
+
+                        <span class="cn">Ok</span>((k, doc))
+                    }
+                    StatusCode::Conflict =&gt; {
+                        <span class="kw">let</span> response_data: error::Error = from_reader(r).unwrap();
+                        <span class="kw">match</span> response_data {
+                            error::Error::Conflict(reason) =&gt; {
+                                conflict(<span class="pp">format!</span>(<span class="st">&quot;Document update conflict: {}&quot;</span>, reason),
+                                         backtrace::Backtrace::new())
+                            }
+                            error::Error::BadRequest(reason) =&gt; {
+                                error(<span class="pp">format!</span>(<span class="st">&quot;Bad request: {}&quot;</span>, reason),
+                                      backtrace::Backtrace::new())
+                            }
+                        }
+                    }
+                    _ =&gt; {
+                        error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected status: {}&quot;</span>, r.status),
+                              backtrace::Backtrace::new())
+                    }
+                }
+            }
+            <span class="cn">Err</span>(e) =&gt; {
+                hyper_error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected HTTP error&quot;</span>),
+                            e,
+                            backtrace::Backtrace::new())
+            }
+        }
+    }
+
+    <span class="kw">fn</span> delete&lt;K: Key&gt;(&amp;<span class="kw">self</span>, key: K) -&gt; <span class="dt">Result</span>&lt;()&gt; {
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(<span class="pp">format!</span>(<span class="st">&quot;{}/{}&quot;</span>, <span class="kw">self</span>.name, key.id()).as_ref());
+        url.query_pairs_mut().append_pair(<span class="st">&quot;rev&quot;</span>, key.rev().unwrap());
+        <span class="kw">let</span> client = hyper::client::Client::new();
+        <span class="kw">let</span> res = client.delete(url)
+            .send();
+
+        <span class="kw">match</span> res {
+            <span class="cn">Ok</span>(r) =&gt; {
+                <span class="kw">match</span> r.status {
+                    StatusCode::<span class="cn">Ok</span> =&gt; <span class="cn">Ok</span>(()),
+                    _ =&gt; {
+                        error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected status: {}&quot;</span>, r.status),
+                              backtrace::Backtrace::new())
+                    }
+                }
+            }
+            <span class="cn">Err</span>(e) =&gt; {
+                hyper_error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected HTTP error&quot;</span>),
+                            e,
+                            backtrace::Backtrace::new())
+            }
+        }
+    }
+}
+
+<span class="kw">impl</span> Client <span class="kw">for</span> HyperClient {
+    <span class="kw">type</span> Database = RemoteDatabase;
+
+    <span class="kw">fn</span> find_database(&amp;<span class="kw">self</span>,
+                     name: DatabaseName)
+                     -&gt; <span class="dt">Result</span>&lt;DatabaseState&lt;RemoteDatabase, RemoteDatabaseCreator&gt;&gt; {
+        <span class="kw">let</span> <span class="kw">mut</span> url = <span class="kw">self</span>.base_url.clone();
+        url.set_path(name.as_ref());
+        <span class="kw">let</span> res = <span class="kw">self</span>.inner
+            .head(url)
+            .send();
+
+        <span class="kw">match</span> res {
+            <span class="cn">Ok</span>(r) =&gt; {
+                <span class="kw">match</span> r.status {
+                    StatusCode::<span class="cn">Ok</span> =&gt; {
+                        <span class="cn">Ok</span>(DatabaseState::Existing(RemoteDatabase {
+                            name: name,
+                            base_url: <span class="kw">self</span>.base_url.clone(),
+                        }))
+                    }
+                    StatusCode::NotFound =&gt; {
+                        <span class="cn">Ok</span>(DatabaseState::Absent(RemoteDatabaseCreator {
+                            name: name,
+                            base_url: <span class="kw">self</span>.base_url.clone(),
+                        }))
+                    }
+                    _ =&gt; {
+                        error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected status: {}&quot;</span>, r.status),
+                              backtrace::Backtrace::new())
+                    }
+                }
+            }
+            <span class="cn">Err</span>(e) =&gt; {
+                hyper_error(<span class="pp">format!</span>(<span class="st">&quot;Unexpected HTTP error&quot;</span>),
+                            e,
+                            backtrace::Backtrace::new())
+            }
+        }
+    }
+}
+
+<span class="kw">fn</span> hyper_error&lt;T, E: std::error::Error + <span class="bu">Send</span> + <span class="ot">&#39;static</span>&gt;(message: <span class="dt">String</span>,
+                                                         error: E,
+                                                         backtrace: backtrace::Backtrace)
+                                                         -&gt; <span class="dt">Result</span>&lt;T&gt; {
+    <span class="cn">Err</span>(Error(ErrorKind::ClientError(message),
+              (<span class="cn">Some</span>(<span class="dt">Box</span>::new(error)), Arc::new(backtrace))))
+}
+
+<span class="kw">fn</span> error&lt;T&gt;(message: <span class="dt">String</span>, backtrace: backtrace::Backtrace) -&gt; <span class="dt">Result</span>&lt;T&gt; {
+    <span class="cn">Err</span>(Error(ErrorKind::ClientError(message), (<span class="cn">None</span>, Arc::new(backtrace))))
+}
+
+<span class="kw">fn</span> conflict&lt;T&gt;(message: <span class="dt">String</span>, backtrace: backtrace::Backtrace) -&gt; <span class="dt">Result</span>&lt;T&gt; {
+    <span class="cn">Err</span>(Error(ErrorKind::ClientError(message), (<span class="cn">None</span>, Arc::new(backtrace))))
+}</code></pre></div>
+
+      <a href="/">top<a/>
+    </div>
+  </body>
+  <script src="./prism.js"></script>
+</html>

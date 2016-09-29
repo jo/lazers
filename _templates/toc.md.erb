@@ -1,0 +1,7 @@
+## Current Shaves
+<% Dir["**/*.md"].each do |f|
+   name = File.basename(f, ".md")
+   title = File.open(f).each_line.first.gsub("# ", '').strip
+%>
+* [<%= title %>](http://laze.rs/docs/<%= name %>)
+<% end %>
